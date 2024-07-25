@@ -1,0 +1,1649 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: |
+  This CloudFormation template creates Lambda function that will send CloudWatch dashboard widgets as emails using SES
+
+Parameters:
+  LambdaExecutionArch:
+    Type: String
+    Default: x86_64
+    AllowedValues:
+      - x86_64
+      - arm64
+    Description: Names of CPU Architecture to use for Lambda Function (ARM or x86)
+  CanSendCloudWatchDashboardFindings:
+    Type: String
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  CanSendCostExplorerFindings:
+    Type: String
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  CanSendSecurityHubFindings:
+    Type: String
+    Default: 'No'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  MaxSecHubFindings:
+    Type: Number
+    Default: 10
+  LambdaLayerArn:
+    Type: String
+    Default: arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:9
+  BedrockRegion:
+    Type: String
+    Default: us-east-1
+  CWDashboardList:
+    Type: String
+    Default: All
+    Description: Comma separated names of CloudWatch Dashboards in this region that
+      will be emailed
+  EmailRecipient:
+    Type: String
+    Description: Email Recipient Address to which CloudWatch Dashboard will be emailed
+    AllowedPattern: '[^@]+@[^@]+\.[^@]+'
+    ConstraintDescription: Enter a valid email address
+  EmailSender:
+    Type: String
+    Description: Email Sender Address FROM which CloudWatch Dashboard will be emailed
+    AllowedPattern: '[^@]+@[^@]+\.[^@]+'
+    ConstraintDescription: Enter a valid email address
+  Bucket:
+    Type: String
+    Description: Bucket Name where Instructions are stored
+  InstructionFile:
+    Type: String
+    Description: Name of file containing instructions
+    Default: Instruction.txt
+  LambdaExecSchedule:
+    Type: String
+    Default: 1440
+    Description: Specify Interval in minutes for Sending emails
+
+Resources:
+  EmailAddressIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref EmailSender
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref Bucket
+
+  CustomResource:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !GetAtt CustomInsightsFunction.Arn
+
+  CustomInsightsLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: CreateSecurityHubInsights
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - securityhub:CreateInsight
+                Resource: '*'
+        - PolicyName: uploadinstructionstext
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: '*'
+
+  CustomInsightsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Layers:
+        - !Ref LambdaLayerArn
+      Environment:
+        Variables:
+          Bucket: !Ref Bucket
+          InstructionFile: !Ref InstructionFile
+          CanSendCloudWatchDashboardFindings: !Ref CanSendCloudWatchDashboardFindings
+          CanSendSecurityHubFindings: !Ref CanSendSecurityHubFindings
+          CanSendCostExplorerFindings: !Ref CanSendCostExplorerFindings
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import os
+          import requests
+          import json
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          def handler(event, context):
+            responseUrl = event['ResponseURL']
+            responseBody = {}
+            print(responseUrl)
+            responseBody['Reason'] = 'See the details in CloudWatch Log Stream: ' + context.log_stream_name
+            responseBody['PhysicalResourceId'] =  context.log_stream_name
+            responseBody['StackId'] = event['StackId']
+            responseBody['RequestId'] = event['RequestId']
+            responseBody['LogicalResourceId'] = event['LogicalResourceId']
+            try:
+                instruction_string = '''<Instruction>
+                </Instruction>
+                <Response Example>
+                '''
+                if (os.environ['CanSendSecurityHubFindings']=='Yes'):
+                    instruction_string += '''
+                    <h2> Remediation Recommendations</h2>
+                    <ul>
+                       <li></li>
+                    </ul>
+                    <h2>Security Posture</h2>
+                    <p>Based on the Security Best Practices checks, there are 'X' failed security checks reported. However, there are some potential security threats and access-related findings identified:</p>
+                    <ul>
+                        <li>'Y' low severity findings from GuardDuty threat detection</li>
+                        <li>'Z' low severity findings from IAM Access Analyzer</li>
+                    </ul>
+                    <h2>Recent Activity</h2>
+                    <p>In the last 7 days, there were:</p>
+                    <ul>
+                        <li>'X' new findings from Security Hub</li>
+                        <li>'Y' new finding from GuardDuty</li>
+                    </ul>'''
+                if (os.environ['CanSendCloudWatchDashboardFindings']=='Yes'):
+                    instruction_string += '''
+                    <h2>Operational Insights</h2>
+                    <p>The following operational insights can be drawn from the provided data:</p>
+                    <ul>
+                        <li></li>
+                    </ul>'''
+                if (os.environ['CanSendCostExplorerFindings']=='Yes'):
+                    instruction_string += '''
+                    <h2> Cost Optimization Recommendations</h2>
+                    <ul>
+                        <li> </li>
+                    </ul>
+                    <h2> Cost Anomaly Alerts</h2>
+                    <ul>
+                        <li> </li>
+                    </ul>'''
+                instruction_string += '''
+                </Response Example>
+                '''
+                encoded_string = instruction_string.encode("utf-8")
+                bucket_name = os.environ['Bucket']
+                file_name = os.environ['InstructionFile']
+                s3_path =  file_name
+                s3 = boto3.resource("s3")
+                s3.Bucket(bucket_name).put_object(Key=s3_path, Body=encoded_string)
+                securityhub = boto3.client('securityhub')
+                params = []
+                params.append({
+                    'Name': 'Summary Email - 01 - AWS Foundational Security Best practices findings by compliance status',
+                    'GroupByAttribute': 'ComplianceStatus',
+                    'Filters': {
+                        'Type': [{'Value': 'Software and Configuration Checks/Industry and Regulatory Standards/AWS-Foundational-Security-Best-Practices', 'Comparison': 'EQUALS'}],
+                        'WorkflowStatus': [{'Value': 'SUPPRESSED', 'Comparison': 'NOT_EQUALS'}],
+                        'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
+                    }
+                })
+                params.append({
+                    'Name': 'Summary Email - 02 - Failed AWS Foundational Security Best practices findings by severity',
+                    'GroupByAttribute': 'SeverityLabel',
+                    'Filters': {
+                        'Type': [{'Value': 'Software and Configuration Checks/Industry and Regulatory Standards/AWS-Foundational-Security-Best-Practices', 'Comparison': 'EQUALS'}],
+                        'WorkflowStatus': [{'Value': 'SUPPRESSED', 'Comparison': 'NOT_EQUALS'}],
+                        'ComplianceStatus': [{'Value': 'FAILED', 'Comparison': 'EQUALS'}],
+                        'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
+                    }
+                })
+                params.append({
+                    'Name': 'Summary Email - 03 - Count of Amazon GuardDuty findings by severity',
+                    'GroupByAttribute': 'SeverityLabel',
+                    'Filters': {
+                        'ProductName': [{'Value': 'GuardDuty', 'Comparison': 'EQUALS'}],
+                        'WorkflowStatus': [{'Value': 'SUPPRESSED', 'Comparison': 'NOT_EQUALS'}],
+                        'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
+                    }
+                })
+                params.append({
+                    'Name': 'Summary Email - 04 - Count of IAM Access Analyzer findings by severity',
+                    'GroupByAttribute': 'SeverityLabel',
+                    'Filters': {
+                        'ProductName': [{'Value': 'IAM Access Analyzer', 'Comparison': 'EQUALS'}],
+                        'WorkflowStatus': [{'Value': 'SUPPRESSED', 'Comparison': 'NOT_EQUALS'}],
+                        'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
+                    }
+                })
+                params.append({
+                    'Name': 'Summary Email - 05 - Count of all unresolved findings by severity',
+                    'GroupByAttribute': 'SeverityLabel',
+                    'Filters': {
+                        'WorkflowStatus': [{'Value': 'RESOLVED', 'Comparison': 'NOT_EQUALS'}, {'Value': 'SUPPRESSED', 'Comparison': 'NOT_EQUALS'}],
+                        'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
+                    }
+                })
+                params.append({
+                    'Name': 'Summary Email - 06 - new findings in the last 7 days',
+                    'GroupByAttribute': 'ProductName',
+                    'Filters': {
+                        'WorkflowStatus': [{'Value': 'RESOLVED', 'Comparison': 'NOT_EQUALS'}, {'Value': 'SUPPRESSED', 'Comparison': 'NOT_EQUALS'}],
+                        'CreatedAt': [{'DateRange': {'Value': '7', 'Unit': 'DAYS'}}],
+                        'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
+                    }
+                })
+                params.append({
+                    'Name': 'Summary Email - 07 - Top Resource Types with findings by count',
+                    'GroupByAttribute': 'ResourceType',
+                    'Filters': {
+                        'WorkflowStatus': [{'Value': 'SUPPRESSED', 'Comparison': 'NOT_EQUALS'}],
+                        'RecordState': [{'Value': 'ACTIVE', 'Comparison': 'EQUALS'}]
+                    }
+                })
+                results=[]
+                for param in params:
+                    try:
+                        response = securityhub.create_insight(Name=param["Name"],GroupByAttribute=param["GroupByAttribute"],Filters=param["Filters"])
+                        print(response['InsightArn'])
+                        results.append(response['InsightArn'])
+                    except Exception as e:
+                        print(e)
+                responseBody['Status'] = SUCCESS
+                responseBody['Data'] = {"arn":",".join(results)}
+            except Exception as e:
+              responseBody['Status'] = Failed
+            json_responseBody = json.dumps(responseBody)
+            print("Response body:\n" + json_responseBody)
+            headers = {
+                  'content-type' : '',
+                  'content-length' : str(len(json_responseBody))
+              }
+            try:
+                  response = requests.put(responseUrl,
+                                          data=json_responseBody,
+                                          headers=headers)
+                  print("Status code: " + response.reason)
+            except Exception as e:
+                  print("send(..) failed executing requests.put(..): " + str(e))
+            return ",".join(results)
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 30
+      Role: !GetAtt CustomInsightsLambdaExecutionRole.Arn
+  ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: CWDashboardEmail
+      ScheduleExpression: !Sub rate(${LambdaExecSchedule} minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt CWLambdaFunction.Arn
+          Id: CWFunctionSchV1
+  PermissionForEventsToInvokeCWLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CWLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ScheduledRule.Arn
+  CWLambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: cw-email-dashboard-lambda-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowLogActions
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Sid: AllowSESemailAPIs
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+              - Sid: AllowCWDashboardActions
+                Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricWidgetImage
+                  - cloudwatch:GetDashboard
+                  - cloudwatch:ListDashboards
+                Resource: '*'
+              - Sid: AllowS3Actions
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: '*'
+              - Sid: AllowSecCostActions
+                Effect: Allow
+                Action:
+                  - cost-optimization-hub:*
+                  - ce:*
+                  - securityhub:*
+                  - bedrock:InvokeModel
+                Resource: '*'
+  LambdaFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Retain
+    Properties:
+      RetentionInDays: 7
+      LogGroupName: !Sub /aws/lambda/${CWLambdaFunction}
+  CWLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.10
+      Timeout: 900
+      MemorySize: 512
+      Architectures:
+        - !Ref LambdaExecutionArch
+      Environment:
+        Variables:
+          DASHBOARD_LIST: !Ref CWDashboardList
+          RECIPIENT: !Ref EmailRecipient
+          SENDER: !Ref EmailSender
+          Bucket: !Ref Bucket
+          InstructionFile: !Ref InstructionFile
+          InsightARNs: !GetAtt CustomResource.arn
+          BedrockRegion: !Ref BedrockRegion
+          CanSendCloudWatchDashboardFindings: !Ref CanSendCloudWatchDashboardFindings
+          CanSendSecurityHubFindings: !Ref CanSendSecurityHubFindings
+          CanSendCostExplorerFindings: !Ref CanSendCostExplorerFindings
+          MaxSecHubFindings: !Ref MaxSecHubFindings
+
+      Handler: index.lambda_handler
+      Role: !GetAtt CWLambdaFunctionRole.Arn
+      Code:
+        ZipFile: !Sub "'''Read CloudWatch Dashboard Widgets using CloudWatch Image API
+          and send as image attachments by Email using AWS SES
+
+
+          Similar to what was published here:
+
+          https://aws.amazon.com/blogs/devops/reduce-time-to-resolution-with-am\
+          azon-cloudwatch-snapshot-graphs-and-alerts/
+
+
+          SES Email reference:
+
+          https://docs.aws.amazon.com/ses/latest/dg/send-email-raw.html\ 
+
+          '''
+
+          import logging, os, boto3, re, json, uuid,base64
+
+          from botocore.exceptions import ClientError
+
+          from email.mime.text import MIMEText
+
+          from email.mime.multipart import MIMEMultipart
+
+          from email.mime.application import MIMEApplication
+
+          runtime = boto3.client(\"bedrock-runtime\",
+          region_name=os.environ['BedrockRegion'])
+
+          securityhub = boto3.client('securityhub') \ 
+
+          from datetime import          date,datetime
+
+
+          from datetime import date
+
+          from datetime import timedelta
+
+
+
+
+          s3 = boto3.resource('s3')
+
+          _filter = Filters={
+
+          \    'ComplianceStatus': [
+
+          \        {
+
+          \            'Value': 'FAILED',
+
+          \            'Comparison': 'EQUALS'
+
+          \        }
+
+          \    ],
+
+          \    'RecordState': [
+
+          \        {
+
+          \            'Value': 'ACTIVE',
+
+          \            'Comparison': 'EQUALS'
+
+          \        }],
+
+          \    'WorkflowState':[
+
+          \        {
+
+          \            'Value': 'NEW',
+
+          \            'Comparison': 'EQUALS'
+
+          \        }],
+
+          \        'SeverityLabel':[
+
+          \        {
+
+          \            'Value': 'HIGH',
+
+          \            'Comparison': 'EQUALS'
+
+          \        },
+
+          \        {
+
+          \            'Value': 'CRITICAL',
+
+          \            'Comparison': 'EQUALS'
+
+          \        },
+
+          \        {
+
+          \            'Value': 'MEDIUM',
+
+          \            'Comparison': 'EQUALS'
+
+          \        },]
+
+          }
+
+          _sort = SortCriteria=[
+
+          \    {
+
+          \        'Field': 'ComplianceStatus',
+
+          \        'SortOrder': 'desc'
+
+          \    },
+
+          \    {
+
+          \        'Field': 'SeverityNormalized',
+
+          \        'SortOrder': 'desc'
+
+          \    }
+
+          ]
+
+          MAX_ITEMS=int(os.environ['MaxSecHubFindings'] )
+
+          # Lambda initializations
+
+          logger = logging.getLogger()
+
+          logger.setLevel(logging.INFO)
+
+
+          region = os.environ['AWS_REGION']
+
+          dashlist = os.environ['DASHBOARD_LIST']\ 
+
+          sender = os.environ['SENDER']
+
+          recipient = os.environ['RECIPIENT']
+
+          bucket_name = os.environ['Bucket']
+
+          key_name = os.environ['InstructionFile']
+
+          CanSendCloudWatchDashboardFindings=os.environ['CanSendCloudWatchDashb\
+          oardFindings']\ 
+
+          CanSendSecurityHubFingings=os.environ['CanSendSecurityHubFindings']
+
+          CanSendCostExplorerFindings=os.environ['CanSendCostExplorerFindings']\
+          \ 
+
+
+
+
+
+          CloudWatch = boto3.client('cloudwatch',region_name=region)
+
+          Ses = boto3.client('ses', region_name=region)
+
+          s3_client = boto3.client('s3', region_name=region)
+
+          validate_dashboard_name = re.compile('^[0-9A-Za-z-_]{1,255}$')
+
+
+          instruction=\"You are IT Operations specialist in AWS, responsible to
+          monitor CloudWatch Dashboard / security Hub / Cost Anomaly RCA and
+          generating Brief summary &  <Remediation Recommendations> in html
+          'Response Format' with severity regarding health of AWS account and
+          resources. \\n if possible generate operational insights using
+          cloudwatch dashboard images.  \\n Think carefully about each findings
+          before answering and do not generate false alerts \\n \\n Response
+          Format:<div> </div> \\n\"
+
+
+          SINGLE_LINE_LENGTH = 80
+
+          DOUBLE_LINE_LENGTH = 47
+
+
+          HEADER_TEXT = 'Weekly Security Hub Report \\n'
+
+
+          def get_cost_anomalies():
+
+          \    client = boto3.client('ce',region_name='us-east-1')
+
+          \    #response=client.get_anomaly_monitors()
+
+          \    response=client.get_anomalies(DateInterval={
+
+          \        'StartDate': f'{date.today() - timedelta(days = 2)}',
+
+          \        'EndDate': f'{date.today()}'
+
+          \    })
+
+          \    anomalies= response['Anomalies']
+
+          \    print(anomalies)
+
+          \    for obj in anomalies:
+
+          \        del          obj['AnomalyId']\ 
+
+          \        del          obj['MonitorArn'] \ 
+
+
+          \    return json.dumps( anomalies)
+
+
+          # this function will add a horizontal line to the email
+
+          def add_horizontal_line(text_body, line_char, line_length):
+
+          \    y = 0
+
+          \    while y <= line_length:
+
+          \        text_body += line_char
+
+          \        y += 1
+
+          \    text_body += '\\n'
+
+          \   \ 
+
+          \    return text_body
+
+
+
+          def lambda_handler(event, context):
+
+          \    object = s3_client.get_object(Bucket=bucket_name, Key=key_name)
+
+          \    body = object['Body']
+
+          \    instruction_string = body.read().decode('utf-8')
+
+          \    bedrockRequest={
+
+          \    \"anthropic_version\": \"bedrock-2023-05-31\",\ 
+
+          \    \"max_tokens\": 200000,
+
+          \    \"messages\": [
+
+          \        {
+
+          \            \"role\": \"user\",
+
+          \            \"content\": [
+
+          \               \ 
+
+          \                {
+
+          \                    \"type\": \"text\",
+
+          \                    \"text\": instruction + instruction_string
+
+          \                }
+
+          \            ]
+
+          \        }
+
+          \    ]\ 
+
+          }\ 
+
+          \   \ 
+
+          \    msg = MIMEMultipart('mixed')
+
+          \    converted_string=\"\"
+
+          \    if (CanSendCloudWatchDashboardFindings=='Yes'):
+
+          \        # Get list of Dashboard Names in the region where Lambda is
+          running
+
+          \        dashboard_name_list = []\ 
+
+          \        if dashlist.strip() == 'All':
+
+          \            response = CloudWatch.list_dashboards()
+
+          \            # Create Python list of Dashboard names from response
+          above
+
+          \            for dashboard in response.get('DashboardEntries'):
+
+          \                dashboard_name_list.append(dashboard.get('DashboardN\
+          ame'))
+
+          \            while 'NextToken' in response:
+
+          \                response = CloudWatch.list_dashboards(
+
+          \                    NextToken=response['NextToken']
+
+          \                )
+
+          \                for dashboard in response['DashboardEntries']:
+
+          \                    dashboard_name_list.append(dashboard.get('Dashbo\
+          ardName'))
+
+          \        else:
+
+          \            for dashboard_name in dashlist.split(','):
+
+          \                dashboard_name = dashboard_name.strip()
+
+          \                if validate_dashboard_name.match(dashboard_name):
+
+          \                    dashboard_name_list.append(dashboard_name)
+
+          \                else:
+
+          \                    logger.error(f'Invalid dashboard name
+          {dashboard_name}')
+
+          \   \ 
+
+          \        logger.info(f'Dashboards list: {dashboard_name_list}')
+
+          \   \ 
+
+          \        # Create a multipart/mixed parent container.
+
+          \       \ 
+
+          \       \ 
+
+          \        # Control to avoid sending email without attachments.
+
+          \        has_attachments = False
+
+          \       \ 
+
+          \        # Get Images from Widgets in CW Dashboard using Image API
+
+          \        #
+          https://boto3.amazonaws.com/v1/documentation/api/latest/reference/ser\
+          vices/cloudwatch/client/get_metric_widget_image.html
+
+          \        for name in dashboard_name_list:
+
+          \            logger.info(f'Issuing get_dashboard({name})')
+
+          \            try:
+
+          \                response = CloudWatch.get_dashboard(DashboardName =
+          name)
+
+          \            except ClientError as e:
+
+          \                logger.error(e)
+
+          \   \ 
+
+          \            #
+          https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/Clou\
+          dWatch-Dashboard-Body-Structure.html
+
+          \            # A DashboardBody is a string in JSON format. It can
+          include an array of between 0 and 500 widget objects,
+
+          \            #  as well as a few other parameters. The dashboard must
+          include a widgets array, which can be empty.
+
+          \            dashboard_body_json = response.get('DashboardBody')
+
+          \            logger.debug(f'Value for DashboardBody:
+          {dashboard_body_json}')
+
+          \   \ 
+
+          \            dashboard_body = json.loads(dashboard_body_json)
+
+          \            widgets = dashboard_body.get('widgets', [])
+
+          \           \ 
+
+          \            if len(widgets) == 0:
+
+          \                logger.warning(f'No widgets found on CloudWatch
+          Dashboard {name}')
+
+          \                continue
+
+          \   \ 
+
+          \            logger.info(f'Retrieved {len(widgets)} widgets from
+          dashboard {name}')
+
+          \            # A dashboard can have widgets of mixed types. Only
+          metric widgets are supported in the\ 
+
+          \            # API to call get_metric_widget_image, must skip other
+          widget types.
+
+          \            for widget in widgets:
+
+          \                if widget.get('type') != 'metric':
+
+          \                    logger.warning(f'Only metric widgets are
+          supported. Skipping widget type {widget.get(\"type\")}')
+
+          \                    continue
+
+          \               \ 
+
+          \                # Metric Widget object mandatory and optional
+          properties documented at\ 
+
+          \                #
+          https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/Clou\
+          dWatch-Dashboard-Body-Structure.html#CloudWatch-Dashboard-Properties-\
+          Metric-Widget-Object
+
+          \                widget_props = widget.get('properties')
+
+          \                widget_props_metrics = widget_props.get('metrics',
+          [])
+
+          \                widget_props_region = str(widget_props.get('region',
+          ''))
+
+          \                # Region is a mandatory property so this check should
+          never trigger
+
+          \                if widget_props_region == '':
+
+          \                    logger.warning('Region property not found, this
+          should never happen!')
+
+          \                    continue
+
+          \                # Currently (2023-09-23) the get_metric_widget_image
+          API call does not render metrics from multiple regions.
+
+          \                # This check can be removed when the API call is
+          updated to support multi-region metrics in the same widget.
+
+          \                skip = False
+
+          \                for metric in widget_props_metrics:
+
+          \                    # metrics is an array of arrays. We want to find
+          dictionaries that contain the region property\ 
+
+          \                    # to compare with the widget's region.
+
+          \                    for item in metric:
+
+          \                        if isinstance(item, dict) and 'region' in
+          item and item.get('region') != widget_props_region:
+
+          \                            skip = True
+
+          \                if skip:
+
+          \                    logger.warning('Skipping widget with metrics from
+          multiple regions.')
+
+          \                    continue
+
+          \   \ 
+
+          \                metric_widget = {
+
+          \                    'metrics': widget_props_metrics,
+
+          \                    'region': widget_props_region
+
+          \                }
+
+          \                # untested and possible: [ 'accountId',
+          'annotations', 'liveData', 'stat', 'timezone' ]
+
+          \                for attribute in [ 'stacked', 'title', 'view',
+          'yAxis', 'legend', 'labels',\ 
+
+          \                                'sparkline', 'period', 'start', 'end'
+          ]:
+
+          \                    if attribute in widget_props:
+
+          \                        metric_widget[attribute] =
+          widget_props.get(attribute)
+
+          \   \ 
+
+          \                # Get Image from Dashboard Image API
+
+          \                logger.info('Issuing get_metric_widget_image()')
+
+          \                try:
+
+          \                    # Given the widget values return empty with ! if
+          the API call goes to a different region,\ 
+
+          \                    # we need to create the client for the metric's
+          region to issue the call.
+
+          \                    CloudWatchGetMetric =
+          boto3.client('cloudwatch',region_name=metric_widget.get('region'))
+
+          \                    CWIresponse =
+          CloudWatchGetMetric.get_metric_widget_image(
+
+          \                        MetricWidget=json.dumps(metric_widget)\ 
+
+          \                    )
+
+          \                except ClientError as e:
+
+          \                    logger.error(e)
+
+          \                img=CWIresponse.get('MetricWidgetImage')
+
+          \                print(type(img))
+
+          \                b64=base64.b64encode(img)
+
+          \               \ 
+
+          \                bedrockRequest['messages'][0]['content'].append({
+
+          \                        \"type\": \"image\",
+
+          \                        \"source\": {
+
+          \                            \"type\": \"base64\",
+
+          \                            \"media_type\": \"image/png\",\ 
+
+          \                            \"data\": b64.decode(\"utf-8\")
+
+          \                        }
+
+          \                    })
+
+          \                b64=f'{b64}'
+
+          \                b64=b64[2:-2]
+
+          \                print(b64)
+
+          \                attachment = MIMEApplication(img)
+
+          \                # https://www.rfc-editor.org/rfc/rfc6838#section-4.2
+
+          \                file_name = re.sub('[^A-Za-z0-9-_]+', '_',
+          widget_props.get('title', str(uuid.uuid4())))
+
+          \                file_name = f'{file_name[0:56]}.png' # keeping
+          name+extension below 64 characters to handle older SMTP servers.
+
+          \                attachment.add_header('Content-Disposition',
+          'inline', filename=file_name)
+
+          \                converted_string +=f'<img alt=\"{file_name}\"
+          src=\"data:image/png;base64,{b64}\" > <br/>'   \ 
+
+          \                msg.attach(attachment)
+
+          \                has_attachments = True
+
+          \               \ 
+
+          \        if not has_attachments:
+
+          \            logger.warning('Email will not be sent: no metric widgets
+          supported by API call found.')
+
+          \            return {
+
+          \                'statusCode': 200,
+
+          \                'body': 'Email will not be sent: no metric widgets
+          supported by API call found.',
+
+          \                'emailID': ''
+
+          \            }
+
+          \    sec_Body=\"\"
+
+          \    if (CanSendSecurityHubFingings=='Yes'):
+
+          \   \ 
+
+          \        sec_Body=GetSecurityHubInsights()
+
+          \        print(sec_Body)
+
+          \        bedrockRequest['messages'][0]['content'].append({
+
+          \                       \ 
+
+          \                        \"type\": \"text\",
+
+          \                        \"text\": sec_Body
+
+          \                    }
+
+          \                    )
+
+          \   \ 
+
+          \        secfindings_Body=GetSecurityHubFindings()
+
+          \        print(secfindings_Body)
+
+          \        bedrockRequest['messages'][0]['content'].append({
+
+          \                       \ 
+
+          \                        \"type\": \"text\",
+
+          \                        \"text\": \"New SecurityHub Findings:\\n
+          ```json \\n\" + secfindings_Body + \"\\```\"
+
+          \                    }
+
+          \                    )
+
+          \   \ 
+
+          \    cofindings_Body  =\"\"
+
+          \   \
+          
+          \    if          (CanSendCostExplorerFindings=='Yes'):
+
+          \        cofindings_Body=GetCostOptimizationHubFindings()
+
+          \           \ 
+
+          \        bedrockRequest['messages'][0]['content'].append({
+
+          \                       \ 
+
+          \                        \"type\": \"text\",
+
+          \                        \"text\": \"Cost Optimization Hub
+          Findings:\\n ```json \\n\" + cofindings_Body + \"\\```\"
+
+          \                    }
+
+          \                    )
+
+          \        canomalyfindings_Body=get_cost_anomalies()
+
+          \        print(canomalyfindings_Body)
+
+          \        bedrockRequest['messages'][0]['content'].append({
+
+          \                       \ 
+
+          \                        \"type\": \"text\",
+
+          \                        \"text\": \"Cost Anomaly Alerts:\\n ```json
+          \\n\" + canomalyfindings_Body + \"\\```\"
+
+          \                    }
+
+          \                    )
+
+          \        print(bedrockRequest)
+
+          \    response = runtime.invoke_model(
+
+          \    modelId=\"anthropic.claude-3-sonnet-20240229-v1:0\",\ 
+
+          \    body=json.dumps(bedrockRequest)
+
+          )
+
+
+          \    response_body = json.loads(response.get(\"body\").read())
+
+          \    print(response_body)
+
+          \    # Send SES Email
+
+          \    html_data = '''
+
+          \    <!DOCTYPE html>
+
+          \        <html>
+
+          \        <head>
+
+          \            <style>
+
+          \                h1   {color: #333;}
+
+          \                p    {color: #555;}
+
+          \            </style>
+
+          \        </head>
+
+          \        <body>
+
+          \                ''' + response_body['content'][0]['text']
+          +  converted_string + sec_Body + '''\ 
+
+          \       \ 
+
+          \        <h2> Disclaimer</h2>
+
+
+          \        <p>Please note that the recommendations provided by this
+          GenAI-based SecOps Observability Solution are generated on a
+          best-effort basis by the AI model. While the solution aims to provide
+          intelligent and accurate insights, it is crucial for the operations
+          team to exercise caution and consult with subject matter experts or
+          specialists before executing any recommendations or making critical
+          decisions.</p>
+
+
+          \        <p>The AI model's outputs should be carefully reviewed and
+          validated by experienced professionals to ensure their applicability
+          and alignment with your organization's specific requirements,
+          policies, and best practices. The recommendations should be treated as
+          guidance and used in conjunction with human expertise and domain
+          knowledge.</p>
+
+
+          \        <p>It is essential to understand that the AI model's
+          recommendations may not always be perfect or account for all possible
+          scenarios or edge cases. Therefore, it is strongly recommended to
+          conduct thorough testing and validation before implementing any
+          significant changes based on the AI-generated recommendations.</p>
+
+
+          \        <p>The maintainers of this solution and the AI model provider
+          cannot be held responsible for any direct or indirect consequences
+          resulting from the implementation of the recommendations without
+          proper due diligence and expert validation.   </p>
+
+          \            </body>
+
+          \    </html>
+
+          \    '''
+
+
+          \    # The subject line for the email.
+
+          \    SUBJECT = 'AWS Account Summary'
+
+
+          \    # The email body for recipients with non-HTML email clients.
+
+          \    BODY_TEXT = 'Hello,\\r\\nPlease see CloudWatch Dashboard Widgets
+          attached.'
+
+
+          \    # The HTML body of the email.
+
+          \    BODY_HTML = html_data
+
+          \    #(html_data)
+
+          \    # The character encoding for the email.
+
+          \    CHARSET = 'utf-8'
+
+
+          \    # Add subject, from and to lines.
+
+          \    msg['Subject'] = SUBJECT\ 
+
+          \    msg['From'] = sender\ 
+
+          \    msg['To'] = recipient
+
+
+          \    # Create a multipart/alternative child container.
+
+          \    msg_body = MIMEMultipart('alternative')
+
+
+          \    # Encode the text and HTML content and set the character
+          encoding. This step is
+
+          \    # necessary if you're sending a message with characters outside
+          the ASCII range.
+
+          \    textpart = MIMEText(BODY_TEXT.encode(CHARSET), 'plain', CHARSET)
+
+          \    htmlpart = MIMEText(BODY_HTML.encode(CHARSET), 'html', CHARSET)
+
+
+          \    # Add the text and HTML parts to the child container.
+
+          \    msg_body.attach(textpart)
+
+          \    msg_body.attach(htmlpart)
+
+
+          \    # Attach the multipart/alternative child container to the
+          multipart/mixed parent container.
+
+          \    msg.attach(msg_body)
+
+          \   \ 
+
+          \    try:
+
+          \        #Provide the contents of the email.
+
+          \        Sesresponse = Ses.send_raw_email(
+
+          \            Source=sender,
+
+          \            Destinations=[
+
+          \                recipient
+
+          \            ],
+
+          \            RawMessage={
+
+          \                'Data':msg.as_string(),
+
+          \            },
+
+          \            #ConfigurationSetName=configuration_set
+
+          \        )
+
+          \    # Display an error if something goes wrong.\t
+
+          \    except ClientError as e:
+
+          \        logger.error(e.response['Error']['Message'])
+
+          \        return {
+
+          \        'statusCode': 500,
+
+          \        'body': 'CW Dashboard(s) Failed.',
+
+          \        'error': e.response['Error']['Message']
+
+          \    }
+
+          \    else:
+
+          \        print(f'Email sent! Message
+          ID:\\n{Sesresponse.get(\"MessageId\")}'),
+
+          \        return {
+
+          \        'statusCode': 200,
+
+          \        'body': 'CW Dashboard(s) Emailed.',
+
+          \        'emailID': Sesresponse.get('MessageId')
+
+          \    }
+
+
+          def GetSecurityHubFindings():
+
+          \        result = securityhub.get_findings(
+
+          \        Filters=_filter,
+
+          \        SortCriteria=_sort,
+
+          \        MaxResults=MAX_ITEMS
+
+          \    )
+
+          \   \ 
+
+          \        arr=[]
+
+          \       \ 
+
+          \        keys = []
+
+          \        count = 0
+
+
+          \           \ 
+
+          \        items = []
+
+          \        findings = result['Findings']
+
+
+
+          \        for obj in findings:
+
+          \            del          obj['SchemaVersion']\ 
+
+          \            del          obj['Id'] \ 
+
+          \            del          obj['ProductArn']
+
+          \            del          obj['ProductName']
+
+          \            del          obj['CompanyName']
+
+          \            del          obj['ProductFields']
+
+          \            del          obj['WorkflowState']
+
+          \            del          obj['RecordState']
+
+          \            del          obj['Compliance']  \ 
+
+          \            del          obj['CreatedAt']
+
+          \            del          obj['UpdatedAt']
+
+          \            del          obj['GeneratorId']
+
+          \            del          obj['ProcessedAt']
+
+
+          \        return json.dumps( findings)
+
+
+          def GetCostOptimizationHubFindings():
+
+          \          client =
+          boto3.client('cost-optimization-hub',region_name='us-east-1')\ 
+
+
+          \          print('=== Enrollment status for AWS accounts in the AWS
+          Organization:')
+
+          \          list_enrollment_paginator =
+          client.get_paginator('list_enrollment_statuses')
+
+          \          list_enrollment_page_iterator =
+          list_enrollment_paginator.paginate(
+
+          \              includeOrganizationInfo=True
+
+          \              )
+
+          \          print('\\tAccount ID  \\tStatus')
+
+          \          for page in list_enrollment_page_iterator:
+
+          \              if page.get('ResponseMetadata').get('HTTPStatusCode')
+          == 200:
+
+          \                  for item in page.get('items'):
+
+          \                      print(f\"\\t{item.get('accountId')}\\t{item.ge\
+          t('status')}\")
+
+
+          \          print('=== Recommendation Summaries (unfiltered):')
+
+          \          for group in ['AccountId', 'Region', 'ActionType',
+          'ResourceType',\ 
+
+          \              'RestartNeeded', 'RollbackPossible',
+          'ImplementationEffort']:
+
+          \              print(f'\\tgroupBy {group}')
+
+          \              response =
+          client.list_recommendation_summaries(groupBy=group)
+
+          \              print(f\"\\tEstimated Total Deduped Savings
+          ({response.get('currencyCode')}):
+          {response.get('estimatedTotalDedupedSavings')}\")
+
+          \              # response.get('items')} has other details for
+          review.\ 
+
+
+          \          print('=== Recommendation (filtered):')
+
+          \          recommendations_filter = {
+
+          \              #'actionTypes': ['Rightsize', 'Upgrade'],
+
+          \              'implementationEfforts': ['VeryLow', 'Low',
+          'Medium','High'],
+
+          \              #'resourceTypes': ['Ec2Instance', 'EbsVolume'],
+
+          \          }
+
+          \          list_recommendations_paginator =
+          client.get_paginator('list_recommendations')
+
+          \          list_recommendations_page_iterator =
+          list_recommendations_paginator.paginate(
+
+          \              filter=recommendations_filter,
+
+          \              includeAllRecommendations=True,
+
+          \              maxResults=100
+
+          \              )
+
+          \          arr=[]
+
+          \          for page in list_recommendations_page_iterator:
+
+          \              if page.get('ResponseMetadata').get('HTTPStatusCode')
+          == 200:
+
+          \                  for item in page.get('items'):
+
+          \                      print(f\"\\tAccount ID:
+          {item.get('accountId')}\", end='')
+
+          \                      print(f\"\\tAction: {item.get('actionType')}\",
+          end='')
+
+          \                      print(f\"\\tEffort:
+          {item.get('implementationEffort')}\", end='')
+
+          \                      print(f\"\\tEstimated Monthly Savings:
+          {item.get('estimatedMonthlySavings')}\", end='')
+
+          \                      print(f\"\\tResource Type:
+          {item.get('currentResourceType')}\")    \ 
+
+          \                      del item['recommendationId']
+
+          \                      del item['recommendationLookbackPeriodInDays']
+
+          \                      del item['lastRefreshTimestamp']
+
+
+          \                      arr.append(item)
+
+          \          return json.dumps( arr)
+
+
+          def GetSecurityHubInsights():
+
+          \    insightArns = os.environ['InsightARNs'].split(\",\")
+
+          \    insightLabels = []
+
+          \    #this is the placement number of insights that are grouped by
+          severity, this is used for reversing the sort
+
+          \    severityTypeInsights = [1,2,3,4]\ 
+
+          \   \ 
+
+          \    #fetch arns for custom insights from lambda environment
+          variables\ 
+
+          \   \ 
+
+          \   \ 
+
+          \    #fetch the SNS arn to send the email body to, from lambda
+          environment variables
+
+          \    #snsTopicArn = os.environ['SNSTopic']
+
+
+          \    #determine region from the arns
+
+          \    arnParsed = insightArns[0].split(':')
+
+          \    region = arnParsed[3]
+
+
+          \    #create list of section labels\ 
+
+          \    insightLabels.append('AWS Foundational Security Best Practices
+          security checks:')
+
+          \    insightLabels.append('AWS Foundational Security Best Practices
+          failed security checks by severity:')
+
+          \    insightLabels.append('GuardDuty threat detection findings by
+          severity:')
+
+          \    insightLabels.append('IAM Access Analyzer findings by severity:')
+
+          \    insightLabels.append('Unresolved findings by severity:')
+
+          \    insightLabels.append('New findings in the last 7 days:')
+
+          \    insightLabels.append('Top 10 Resource Types with findings:')\ 
+
+          \   \ 
+
+          \    #format Email header
+
+          \    snsBody = '<div>'
+
+          \    snsBody = add_horizontal_line(snsBody, '=', DOUBLE_LINE_LENGTH)
+
+          \    snsBody += HEADER_TEXT
+
+          \    snsBody = add_horizontal_line(snsBody, '=', DOUBLE_LINE_LENGTH)
+
+          \    snsBody += '\\n\\n'
+
+          \   \ 
+
+          \    #create boto3 client for Security Hub API calls
+
+          \    sec_hub_client = boto3.client('securityhub')
+
+          \   \ 
+
+          \    #for each custom insight get results and format for email
+
+          \    i = 0
+
+          \    while i < len(insightArns):
+
+          \       \ 
+
+          \        #call security hub api to get results for each custom insight
+
+          \        response = sec_hub_client.get_insight_results(
+
+          \            InsightArn=insightArns[i]
+
+          \        )
+
+          \        insightResults = response['InsightResults']['ResultValues']
+
+          \       \ 
+
+          \        #format into an email - section header
+
+          \        snsBody += str(insightLabels[i]) + '\\n'
+
+          \        snsBody = add_horizontal_line(snsBody,'-',
+          SINGLE_LINE_LENGTH)
+
+
+          \        #check for blank custom insights
+
+          \        if len(insightResults) == 0:
+
+          \            snsBody += 'NO RESULTS \\n'
+
+          \       \ 
+
+          \        #determine how many rows are in this section, cap at 10
+
+          \        totalRows = len(insightResults)
+
+          \        if totalRows > 10:
+
+          \            totalRows = 10
+
+          \       \ 
+
+          \        #determine if this is the first section to customize the
+          label
+
+          \        if i == 0:
+
+          \            firstSection = True
+
+          \        else:
+
+          \            firstSection = False
+
+          \       \ 
+
+          \        #determine if this is an insight that needs an updated sort
+
+          \        if (i in severityTypeInsights):\ 
+
+          \            #reverse the sort
+
+          \            insightResults.reverse()
+
+
+          \        #convert the API results into rows for email formatting   \ 
+
+          \        x = 0  \ 
+
+          \        while x < totalRows:
+
+          \           \ 
+
+          \            snsBody  +=  str(insightResults[x]['Count']) #add the
+          value
+
+          \            snsBody += '\\t - \\t'    #add a divider
+
+          \            if firstSection: #add two extra labels (TOTAL and CHECKS)
+          to the values for the foundational summary\ 
+
+          \                snsBody += 'TOTAL '
+
+          \                snsBody +=
+          str(insightResults[x]['GroupByAttributeValue']) #add the label
+
+          \                snsBody += ' CHECKS'
+
+          \            else:
+
+          \                snsBody +=
+          str(insightResults[x]['GroupByAttributeValue']) #add the label
+
+          \               \ 
+
+          \            snsBody += '\\n' #next line
+
+          \            x += 1
+
+          \       \ 
+
+          \        #add table footer\ 
+
+          \        snsBody = add_horizontal_line(snsBody,'-',
+          SINGLE_LINE_LENGTH)
+
+          \        snsBody +=' \\n'
+
+
+          \        #create and add deep link for this section
+
+          \        insightLink = 'https://' + region +
+          '.console.aws.amazon.com/securityhub/home?region='
+
+          \        insightLink += region + '#/insights/' + insightArns[i]
+
+          \        snsBody += insightLink
+
+
+          \        snsBody += ' \\n\\n'
+
+          \        i += 1
+
+          \    snsBody +='</div>'
+
+          \    return snsBody"
+
+Outputs:
+  LambdaFunctionName:
+    Value: !Ref CWLambdaFunction
