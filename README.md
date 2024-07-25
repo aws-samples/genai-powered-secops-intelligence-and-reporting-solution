@@ -1,9 +1,9 @@
-# GenAI-powered SecOps Intelligence and Reporting Solution
+# GenAI-powered SecOps Intelligence and Reporting
 
 ## Overview
 This repository contains a AWS CloudFormation template that deploys a comprehensive solution for SecOps Observability powered by Generative AI (GenAI). The solution leverages various AWS services, including Amazon Bedrock, to monitor IT systems, analyze logs and metrics, and provide intelligent insights.
 
-## Problem Statement
+## Challange
 Managing and monitoring the security posture of cloud environments can be a complex and time-consuming task. Security teams often struggle to keep up with the ever-increasing volume of security findings, metrics, and operational data. Manually analyzing and correlating this data to identify potential threats and vulnerabilities becomes increasingly challenging, leading to missed insights and delayed response times.
 
 ## Solution
