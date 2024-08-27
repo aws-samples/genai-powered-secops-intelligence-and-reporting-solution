@@ -160,14 +160,14 @@ Resources:
                     <h2>Security Posture</h2>
                     <p>Based on the Security Best Practices checks, there are 'X' failed security checks reported. However, there are some potential security threats and access-related findings identified:</p>
                     <ul>
-                        <li>'Y' low severity findings from GuardDuty threat detection</li>
-                        <li>'Z' low severity findings from IAM Access Analyzer</li>
+                        <li>'X'  findings</li>
+                        
                     </ul>
                     <h2>Recent Activity</h2>
                     <p>In the last 7 days, there were:</p>
                     <ul>
-                        <li>'X' new findings from Security Hub</li>
-                        <li>'Y' new finding from GuardDuty</li>
+                        <li>'Y' new findings</li>
+                       
                     </ul>'''
                 if (os.environ['CanSendCloudWatchDashboardFindings']=='Yes'):
                     instruction_string += '''
@@ -270,7 +270,7 @@ Resources:
                 responseBody['Status'] = SUCCESS
                 responseBody['Data'] = {"arn":",".join(results)}
             except Exception as e:
-              responseBody['Status'] = Failed
+              responseBody['Status'] = FAILED
             json_responseBody = json.dumps(responseBody)
             print("Response body:\n" + json_responseBody)
             headers = {
