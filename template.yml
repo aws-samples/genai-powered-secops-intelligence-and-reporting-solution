@@ -1214,11 +1214,7 @@ Resources:
 
           \            Source=sender,
 
-          \            Destinations=[
-
-          \                recipient
-
-          \            ],
+          \            Destinations=recipient.split(','),
 
           \            RawMessage={
 
