@@ -1354,6 +1354,10 @@ Resources:
 
 
           \          print('=== Recommendation Summaries (unfiltered):')
+          
+
+          \          summary=None
+          
 
           \          for group in ['AccountId', 'Region', 'ActionType',
           'ResourceType',\ 
@@ -1363,14 +1367,14 @@ Resources:
 
           \              print(f'\\tgroupBy {group}')
 
-          \              response =
+          \              summary =
           client.list_recommendation_summaries(groupBy=group)
 
           \              print(f\"\\tEstimated Total Deduped Savings
-          ({response.get('currencyCode')}):
-          {response.get('estimatedTotalDedupedSavings')}\")
+          ({summary.get('currencyCode')}):
+          {summary.get('estimatedTotalDedupedSavings')}\")
 
-          \              # response.get('items')} has other details for
+          \              # summary.get('items')} has other details for
           review.\ 
 
 
@@ -1395,7 +1399,7 @@ Resources:
 
           \              filter=recommendations_filter,
 
-          \              includeAllRecommendations=True,
+          \              includeAllRecommendations=False,
 
           \              maxResults=100
 
@@ -1434,7 +1438,7 @@ Resources:
 
           \                      arr.append(item)
 
-          \          return json.dumps( arr)
+          \          return json.dumps({'summary': summary,'findings':arr[:100] })
 
 
           def GetSecurityHubInsights():
