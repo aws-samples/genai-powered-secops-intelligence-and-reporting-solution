@@ -155,6 +155,38 @@ To customize the email notification template, navigate to the `<Response Example
 
 ![Sample email](sample_email.png)
 
+## Deploy Weekly Cost Optimization Recommendation only
+Here are the steps to deploy the only Weekly Cost Optimization Recommendation and Reporting Solution using the provided CloudFormation template (cfn_cost_optimization_recommendation_template.yml)
+
+1. Create an AWS CloudFormation stack
+   Open the AWS CloudFormation console and click on "Create stack" -> "With new resources (standard)"..
+
+2. Upload the CloudFormation template
+   In the "Specify template" section, choose "Upload a template file" and select the `cfn_cost_optimization_recommendation_template.yml` file from your local repository.
+
+3. Configure the parameters
+
+## Sample Weekly Cost Optimization Recommendation Email Notification
+
+![cost-optimization-recommendation-email-sample](cost-optimization-recommendation-email-sample.png)
+
+
+## Deploy Daily Security Hub Findings and Recommendation only
+
+Here are the steps to deploy the only Security Hub Findings and Recommendation Solution using the provided CloudFormation template (cfn_security_hub_recommendation_template.yml)
+
+1. Create an AWS CloudFormation stack
+   Open the AWS CloudFormation console and click on "Create stack" -> "With new resources (standard)"..
+
+2. Upload the CloudFormation template
+   In the "Specify template" section, choose "Upload a template file" and select the `cfn_security_hub_recommendation_template.yml` file from your local repository.
+
+3. Configure the parameters
+
+## Sample Daily Security Hub Recommendations Email Notification
+
+![security_hub_recommendation_template-email-sample](security_hub_recommendation_template-email-sample.png)
+
 ## Disclaimer
 
 Please note that the recommendations provided by this GenAI-powered SecOps Intelligence and Reporting Solution are generated on a best-effort basis by the AI model. While the solution aims to provide intelligent and accurate insights, it is crucial for the operations team to exercise caution and consult with subject matter experts or specialists before executing any recommendations or making critical decisions.
