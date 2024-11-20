@@ -175,13 +175,52 @@ Here are the steps to deploy the only Weekly Cost Optimization Recommendation an
 
 Here are the steps to deploy the only Security Hub Findings and Recommendation Solution using the provided CloudFormation template (cfn_security_hub_recommendation_template.yml)
 
-1. Create an AWS CloudFormation stack
-   Open the AWS CloudFormation console and click on "Create stack" -> "With new resources (standard)"..
+#### Step 1: Prepare Lambda Code
 
-2. Upload the CloudFormation template
-   In the "Specify template" section, choose "Upload a template file" and select the `cfn_security_hub_recommendation_template.yml` file from your local repository.
+1. **Create a Zip File**:
+   Navigate to the directory where your `index.py` file is located and create a zip file:
+   ```bash
+   zip lambda_function.zip index.py
+   ```
 
-3. Configure the parameters
+#### Step 2: Upload Lambda Code to S3
+
+1. Access the **AWS Management Console**.
+2. Navigate to **S3**.
+3. Create a new bucket (or use an existing one) where you will store the Lambda function code.
+4. Upload the `lambda_function.zip` file to your S3 bucket.
+
+#### Step 3: Prepare CloudFormation Template
+
+1. Download the CloudFormation template file (`cfn_security_hub_recommendation_template.yml`) from [here](/cfn_security_hub_recommendation_template.yml).
+2. Ensure that your template includes parameters for `LambdaCodeBucket` and `LambdaCodeKey`.
+
+#### Step 4: Create CloudFormation Stack
+
+1. Navigate back to **CloudFormation** in the AWS Management Console.
+2. Click on **Create Stack** and choose **With new resources (standard)**.
+3. Under **Specify template**, select **Upload a template file**.
+4. Upload the modified `aws-securityhub-findings-analyzer.yml` file.
+
+#### Step 5: Configure Stack Parameters
+
+1. Enter a **Stack name** (e.g., `SecurityHubFindingsAnalyzer`).
+2. Provide the necessary parameters:
+   - **LambdaCodeBucket**: Your S3 bucket name where the zip file is stored.
+   - **LambdaCodeKey**: The key (path) for your uploaded zip file (e.g., `lambda_function.zip`).
+   - `SENDER_EMAIL`: Your sender email address for SES.
+   - `RECIPIENT_EMAIL`: Your recipient email address for SES.
+   - `BEDROCK_MODEL_ID`: The model ID for Amazon Bedrock.
+   - `FINDINGS_HOURS`: Specify how many hours back to look for findings (e.g., `24`).
+
+#### Step 6: Review and Create Stack
+
+#### Step 7: Execute the Lambda Function
+
+Once deployed, you can manually invoke the Lambda function or let EventBridge trigger it:
+
+1. **Manually Run the Function**:
+   Go to the AWS Lambda console, select your deployed function, and click on **Test** to execute it.
 
 ## Sample Daily Security Hub Recommendations Email Notification
 
